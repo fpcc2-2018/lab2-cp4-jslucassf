@@ -1,0 +1,93 @@
+---
+title: "Inferência via ICs"
+author: "Js Lucas"
+date: "21 de maio de 2018"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introdução
+A [Wikimedia Foundation](https://wikimediafoundation.org/wiki/Home) é uma organização sem fins lucrativos que mantém projetos baseados em [wiki](https://en.wikipedia.org/wiki/Wiki) como a Wikipedia. 
+
+Neste relatório, iremos responder algumas perguntas propostas por eles, em um [desafio para seleção de analistas de dados](https://github.com/wikimedia-research/Discovery-Hiring-Analyst-2016):
+
+1. Qual é nossa taxa de click geral diária? Como ela varia entre os grupos?
+2. Qual resultados as pessoas tendem a tentar primeiro? Como ela muda dia a dia?
+3. Qual é nossa taxa de resultados zerados diária? Como ela varia entre os grupos?
+
+Para responder essas perguntas, utilizaremos os  [dados](https://github.com/wikimedia-research/Discovery-Hiring-Analyst-2016/raw/master/events_log.csv.gz) fornecidos por eles e modificados pelo professor Nazareno Andrade 
+Como os dados providos pela Wikimedia são apenas uma amostra, utilizaremos bootstrap e intervalo de confiança para inferir sobre a amostra. Nossas análises serão baseadas em um nível de 95% de confiança.
+
+```{r}
+library(here)
+library(boot)
+library(lubridate)
+library(dplyr)
+library(readr)
+library(ggplot2)
+
+buscas <- read_csv(here::here("data/search_data.csv"))
+buscas <- buscas %>% 
+    filter(!(num_clicks > results & results == 0))
+```
+
+
+## Definições
+
+Antes de mais nada, é importante para responder as perguntas a seguir, definir dois conceitos.
+
+Taxa de cliques: A proporção de sessões em que o usuário clicou em ao menos um dos resultados.
+Taxa de resultados zerados: A proporção de sessões com 0 resultados.    
+
+## **Qual é nossa taxa de click geral diária? Como ela varia entre os grupos?**
+
+Vamos utilizar inferência para calcular a taxa diária.
+
+```{r}
+sessoes <- buscas %>%
+    group_by(session_id) %>% 
+    summarise(grupo = first(group),
+              com_clique = sum(num_clicks, na.rm = TRUE) > 0,
+              data = paste(day(first(session_start_date)), month(first(session_start_date)), year(first(session_start_date)), sep = "/"))
+    
+taxa_de_cliques <- function(value, i){
+    return(sum(value[i])/length(value))
+}
+
+cliques_por_dia <- sessoes %>% 
+    group_by(data) %>% 
+    summarise(boot = list(boot(com_clique, taxa_de_cliques, R = 1000)),
+              ci = list(boot.ci(boot[[1]], conf = 0.95, type = "basic")),
+              lim_inf = ci[[1]][[4]][4],
+              lim_sup = ci[[1]][[4]][5]) %>% 
+    select(-c(boot, ci))
+
+cliques_por_dia %>% 
+    ggplot(aes(x = data, ymin = lim_inf, ymax = lim_sup)) + 
+    geom_errorbar(width = .2) +
+    labs(x = "Data", y = "proporção de click por dia")
+```
+
+Podemos observar, em geral a taxa diária de cliques é baixa. Assumindo com 95% de confiança, valores entre 0.36 e 0.40. Aparentemente existe pouca diferença entre os dias, uma vez que todos apresentam intervalos muito próximos, entretanto, há diferença entre os grupos?
+
+```{r}
+cliques_por_dia_grupos <- sessoes %>% 
+    group_by(data, grupo) %>% 
+    summarise(boot = list(boot(com_clique, taxa_de_cliques, R = 1000)),
+              ci = list(boot.ci(boot[[1]], conf = 0.95, type = "basic")),
+              lim_inf = ci[[1]][[4]][4],
+              lim_sup = ci[[1]][[4]][5]) %>% 
+    select(-c(boot, ci))
+
+cliques_por_dia_grupos %>% 
+    ggplot(aes(x = data, ymin = lim_inf, ymax = lim_sup, color = grupo)) + 
+    geom_errorbar(width = .2) +
+    labs(x = "Data", y = "proporção de click por dia")
+```
+A resposta é sim. As sessões do grupo B apresentaram intervalos com valores muito abaixo daquelas do grupo A. Para este, a maioria das sessões resulta em clique com 95% de confiança, uma vez que todos seus intervalos estão acima de 0.5. Já as sessões do grupo B possuem resultados ainda mais baixos, variando entre 0.1 e 0.2.
